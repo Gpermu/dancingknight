@@ -9,7 +9,7 @@
     {
       "binding": "DB",
       "database_name": "dancingknight-db",
-      "database_id": "00000000-0000-4000-8000-000000000000",
+      "database_id": "0323a9ad-a2c8-4507-86fa-074f7454e551",
       "migrations_dir": "drizzle"
     }
   ]

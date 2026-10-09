@@ -1,0 +1,11 @@
+import type { Color, Square, PieceSymbol } from 'chess.js';
+import type { GameResult } from './chess-rules';
+export type Variant='standard'|'atomic';
+export type PlayMode='online'|'local'|'random';
+export type MoveView={from:Square;to:Square;san:string;color:Color;piece:PieceSymbol;promotion?:PieceSymbol;captured?:PieceSymbol;before:string;after:string;check:boolean};
+export type PositionView={fen:string;check:boolean;history:MoveView[];legalMoves:MoveView[];claim:string|null};
+export type Seat={id:string;name:string};
+export type GameState={mode:PlayMode;variant?:Variant;white:Seat;black:Seat|null;control:string;moves:string[];whiteMs:number;blackMs:number;lastAt:number|null;result:GameResult|null;drawOffer:Color|null;round:number};
+export type ChatMessage={id:string;name:string;body:string;createdAt:number;mine:boolean};
+export type RoomView={code:string;version:number;mode:PlayMode;variant:Variant;position:PositionView;white:string;black:string|null;control:string;moves:string[];whiteMs:number;blackMs:number;lastAt:number|null;result:GameResult|null;drawOffer:Color|null;round:number;role:Color|'both'|'spectator'|'guest';serverNow:number;messages:ChatMessage[];rematchOffer:Color|null};
+export type MatchView={status:'waiting'|'matched'|'cancelled'|'expired';ticket:string;room?:RoomView};

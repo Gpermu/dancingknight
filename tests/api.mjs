@@ -1,0 +1,33 @@
+import assert from 'node:assert/strict';
+import {DatabaseSync} from 'node:sqlite';
+import {createRequire} from 'node:module';
+import fs from 'node:fs';
+const require=createRequire(import.meta.url),{build}=createRequire(require.resolve('drizzle-kit'))('esbuild');
+const sql=new DatabaseSync(':memory:');sql.exec(fs.readFileSync('drizzle/0000_far_maggott.sql','utf8'));
+const wrap=(query,params=[])=>({bind(...values){return wrap(query,values)},async first(){return sql.prepare(query).get(...params)||null},async all(){return {results:sql.prepare(query).all(...params)}},async run(){const r=sql.prepare(query).run(...params);return {meta:{changes:r.changes}}}});
+globalThis.__chessTestEnv={DB:{prepare:query=>wrap(query),async batch(stmts){sql.exec('BEGIN');try{const r=[];for(const stmt of stmts)r.push(await stmt.run());sql.exec('COMMIT');return r}catch(e){sql.exec('ROLLBACK');throw e}}}};
+await build({entryPoints:['app/api/room/route.ts'],bundle:true,platform:'node',format:'esm',outfile:'.test-output/test-api.mjs',plugins:[{name:'mock-cloudflare',setup(b){b.onResolve({filter:/^cloudflare:workers$/},()=>({path:'mock-env',namespace:'mock'}));b.onLoad({filter:/.*/,namespace:'mock'},()=>({contents:'export const env=globalThis.__chessTestEnv'}));}}]});
+const api=await import('../.test-output/test-api.mjs');
+const a={},b={},spectator={};let time=Date.now();const realNow=Date.now;Date.now=()=>time;
+async function post(client,body,status=200){const r=await api.POST(new Request('http://test/api/room',{method:'POST',headers:{'Content-Type':'application/json',...(client.cookie?{Cookie:client.cookie}:{})},body:JSON.stringify(body)}));if(r.headers.get('set-cookie'))client.cookie=r.headers.get('set-cookie').split(';')[0];const d=await r.json();assert.equal(r.status,status,JSON.stringify(d));return d}
+async function get(client,code){const r=await api.GET(new Request(`http://test/api/room?code=${code}`,{headers:client.cookie?{Cookie:client.cookie}:{}}));assert.equal(r.status,200);return await r.json()}
+let n=0;const pass=name=>{n++;console.log('PASS',name)};
+let room=await post(a,{action:'create',name:'White',mode:'online',control:'3+2'},201);const code=room.code;assert.equal(room.role,'w');assert.equal(room.black,null);pass('Create online room with authenticated white seat');
+await post(a,{action:'move',code,version:room.version,from:'e2',to:'e4'},400);pass('Cannot move before opponent joins');
+room=await post(b,{action:'join',code,name:'Black'});assert.equal(room.role,'b');assert.equal(room.lastAt,time);pass('Second session joins black, starting clock');
+let spec=await post(spectator,{action:'join',code,name:'Watcher'});assert.equal(spec.role,'spectator');await post(spectator,{action:'move',code,version:spec.version,from:'e2',to:'e4'},403);pass('Spectator cannot move');
+await post(b,{action:'move',code,version:room.version,from:'e7',to:'e5'},403);pass('Opponent cannot move out of turn');
+await post(a,{action:'move',code,version:room.version,from:'e2',to:'e5'},400);pass('Server rejects illegal moves');
+time+=5000;const oldVersion=room.version;room=await post(a,{action:'move',code,version:room.version,from:'e2',to:'e4'});assert.equal(room.whiteMs,177000);assert.equal(room.moves[0],'e4');pass('Move clock deductions and increment');
+await post(b,{action:'move',code,version:oldVersion,from:'e7',to:'e5'},409);pass('Stale version rejected');
+time+=1000;const stale=room.version;const racing=await Promise.all([post(b,{action:'move',code,version:stale,from:'e7',to:'e5'}),post(b,{action:'move',code,version:stale,from:'c7',to:'c5'},409)]);room=racing[0];assert.equal((await get(a,code)).moves.length,2);pass('Concurrent moves cannot overwrite each other');
+const messageId=crypto.randomUUID();await post(a,{action:'chat',code,message:'Hello <script>alert(1)</script>',messageId});await post(a,{action:'chat',code,message:'Hello <script>alert(1)</script>',messageId});room=await get(b,code);assert.equal(room.messages.length,1);assert.equal(room.messages[0].mine,false);assert.equal(room.messages[0].body,'Hello <script>alert(1)</script>');pass('Chat persists across sessions and retries do not duplicate');
+const guest=await get({},code);assert.equal(guest.role,'guest');assert.equal(guest.messages.length,0);pass('Unjoined visitor cannot read room chat');
+room=await post(a,{action:'offer',code,version:room.version});await post(a,{action:'accept',code,version:room.version},400);room=await post(b,{action:'accept',code,version:room.version});assert.equal(room.result.reason,'합의 무승부');pass('Draw agreement requires the opposing player');
+await post(a,{action:'move',code,version:room.version,from:'g1',to:'f3'},400);pass('Finished game is immutable');
+room=await post(a,{action:'rematch',code,version:room.version});assert(room.result);room=await post(b,{action:'rematch',code,version:room.version});assert.equal(room.role,'w');assert.equal(room.white,'Black');assert.equal(room.round,2);assert.equal(room.moves.length,0);assert.equal(room.result,null);pass('Mutual rematch swaps seats and resets game');
+time+=181000;room=await get(a,code);assert.equal(room.result.winner,'b');assert.equal(room.result.reason,'시간 초과');assert.equal((await get(b,code)).result.reason,'시간 초과');pass('Flag fall resolves and persists even without a move');
+time+=61000;let local=await post(a,{action:'create',mode:'local',name:'White',control:'unlimited'},201);assert.equal(local.role,'both');assert.equal(local.lastAt,null);const localCode=local.code;
+for(const [from,to] of [['g1','f3'],['g8','f6'],['f3','g1'],['f6','g8'],['g1','f3'],['g8','f6'],['f3','g1']])local=await post(a,{action:'move',code:localCode,version:local.version,from,to});
+local=await post(a,{action:'move',code:localCode,version:local.version,from:'f6',to:'g8',claim:true});assert.equal(local.result.winner,null);assert.equal(local.moves.length,7);assert.match(local.result.reason,/예정 수/);pass('Intended-move repetition claim does not execute the move');
+Date.now=realNow;sql.close();console.log(`${n} API integration checks passed.`);
